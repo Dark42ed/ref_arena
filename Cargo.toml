@@ -1,0 +1,21 @@
+[package]
+name = "rcarena"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[[bench]]
+name = "rc_allocate"
+harness = false
+
+[[bench]]
+name = "rc_deref"
+harness = false
+
+[[bench]]
+name = "rc_drop"
+harness = false
+
+[dev-dependencies]
+brunch = "0.5.2"
