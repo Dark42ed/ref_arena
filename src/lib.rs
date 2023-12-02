@@ -293,7 +293,7 @@ impl<T> RefArena<T> {
 
         RcRef {
             buffer: buffer.clone(),
-            index,
+            ptr: unsafe { buffer.arena.get_unchecked(index) },
         }
     }
 }
@@ -320,7 +320,7 @@ impl<T> Default for RefArena<T> {
 ///
 pub struct RcRef<T> {
     buffer: Rc<InnerArena<T>>,
-    index: usize,
+    ptr: *const (UnsafeCell<MaybeUninit<T>>, UnsafeCell<usize>),
 }
 
 impl<T> RcRef<T> {
@@ -330,14 +330,14 @@ impl<T> RcRef<T> {
     }
 
     unsafe fn get_inner(&self) -> &(UnsafeCell<MaybeUninit<T>>, UnsafeCell<usize>) {
-        unsafe { self.buffer.arena.get_unchecked(self.index) }
+        unsafe { &*self.ptr }
     }
 
     /// Gets the inner data and refcount immutably
     /// Safe since it gives an immut ref.
-    fn get_data(&self) -> &MaybeUninit<T> {
+    fn get_data(&self) -> &T {
         // Index is within buffer len, checked on creation
-        unsafe { &*self.buffer.arena.get_unchecked(self.index).0.get() }
+        unsafe { (*self.get_inner().0.get()).assume_init_ref() }
     }
 }
 
@@ -353,7 +353,7 @@ impl<T> Clone for RcRef<T> {
 
         RcRef {
             buffer: self.buffer.clone(),
-            index: self.index,
+            ptr: self.ptr.clone()
         }
     }
 }
@@ -371,7 +371,10 @@ impl<T> core::ops::Drop for RcRef<T> {
                 let data = &mut *inner.0.get();
                 data.assume_init_drop();
                 if let Some(vacant) = self.buffer.vacant.upgrade() {
-                    (*vacant.get()).push((self.buffer.buffer_index, self.index));
+                    // Calculate index from ptr offset, so Deref impl doesn't
+                    // calculate offset and just derefs ptr directly.
+                    let index = self.ptr.offset_from(self.buffer.arena.as_ptr());
+                    (*vacant.get()).push((self.buffer.buffer_index, index as usize));
                 }
             }
         }
@@ -383,7 +386,7 @@ impl<T> core::ops::Deref for RcRef<T> {
 
     fn deref(&self) -> &Self::Target {
         // Data is initted on creation
-        unsafe { self.get_data().assume_init_ref() }
+        self.get_data()
     }
 }
 
@@ -478,6 +481,8 @@ mod test {
         drop(rc);
         assert_eq!(*rcclone, 5);
         assert_eq!(rcclone.ref_count(), 1);
+        assert_eq!(unsafe { &*arena.vacant.get() }.len(), 0);
         drop(rcclone);
+        assert_eq!(unsafe { &*arena.vacant.get() }.len(), 1);
     }
 }
