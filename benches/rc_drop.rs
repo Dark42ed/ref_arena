@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use brunch::Bench;
-use rc_arena::{RcArena, RcRef};
+use ref_arena::{RefArena, RcRef};
 
 fn seed_rc() -> Vec<Rc<i32>> {
     let mut v = Vec::new();
@@ -13,8 +13,8 @@ fn seed_rc() -> Vec<Rc<i32>> {
     v
 }
 
-fn seed_arena() -> (RcArena<i32>, Vec<RcRef<i32>>) {
-    let mut arena = RcArena::new();
+fn seed_arena() -> (RefArena<i32>, Vec<RcRef<i32>>) {
+    let mut arena = RefArena::new();
     let mut v = Vec::new();
 
     for i in 0..10_000 {
@@ -25,12 +25,12 @@ fn seed_arena() -> (RcArena<i32>, Vec<RcRef<i32>>) {
 }
 
 brunch::benches! {
-    Bench::new("Rc drop 10_000")
+    Bench::new("std::rc::Rc drop 10_000")
         .run_seeded_with(seed_rc, |v| {
             drop(v)
         }),
 
-    Bench::new("RcArena drop 10_000")
+    Bench::new("RefArena drop 10_000")
         .run_seeded_with(seed_arena, |(arena, v)| {
             drop((arena, v))
         })

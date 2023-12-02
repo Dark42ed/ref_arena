@@ -1,6 +1,14 @@
 #![no_std]
-//! An `no_std` (alloc) arena that acts similarly to a `Slab<Rc<T>>` but with
+//! A no_std (alloc) arena that acts similarly to a `Slab<Rc<T>>` but with
 //! better performance and less features.
+//! 
+//! This arena stores reference counts with the objects in
+//! a continuous buffer, which decreases the need for
+//! multiple small memory allocations. References can
+//! be cloned and act like normal `Rc`s. When all references
+//! to an object is dropped, the space is made available
+//! for a new object, and if the arena is dropped, the
+//! underlying buffer may also be dropped.
 //!
 //! This arena features constant time inserts, derefs,
 //! and drops while allocating less often, decreasing
@@ -8,7 +16,7 @@
 //! (depending on the allocator), and potentially using 
 //! less memory.
 //!
-//! RcArena does not support Weak references and probably
+//! RefArena does not support Weak references and probably
 //! will not in the indefinite future.
 //!
 //! This library uses a decent amount of unsafe code, and is
@@ -18,9 +26,9 @@
 //! # Example
 //!
 //! ```
-//! use rc_arena::{RcArena, RcRef};
+//! use ref_arena::{RefArena, RcRef};
 //!
-//! let mut arena: RcArena<i32> = RcArena::new();
+//! let mut arena: RefArena<i32> = RefArena::new();
 //!
 //! // Create a reference
 //! let reference: RcRef<i32> = arena.insert(5);
@@ -54,7 +62,7 @@
 //! Allocating 10k `Rc`s:
 //! ```text
 //! std::rc::Rc   allocate 10_000  247.59 μs
-//! RcArena       allocate 10_000  48.57 μs
+//! RefArena      allocate 10_000  48.57 μs
 //!
 //! ~5x speedup
 //! ```
@@ -62,7 +70,7 @@
 //! Dereferencing 10k `Rc`s:
 //! ```text
 //! std::rc::Rc   deref 10_000     4.97 μs
-//! RcArena       deref 10_000     4.86 μs
+//! RefArena      deref 10_000     4.86 μs
 //!
 //! no speedup
 //! ```
@@ -74,10 +82,40 @@
 //! Dropping 10k `Rc`s:
 //! ```text
 //! std::rc::Rc   drop 10_000      134.35 μs
-//! RcArena       drop 10_000      29.06 μs
+//! RefArena      drop 10_000      29.06 μs
 //!
 //! ~4.62x speedup
 //! ```
+//! 
+//! Reallocating 10k `Rc`s:
+//! ```text
+//! RefArena      realloc 10_000   45.62 μs
+//! ```
+//! 
+//! In this case 10k RcRefs were allocated and dropped, and we measured
+//! the time it took to put 10k objects back onto the arena.
+//! (Compare to allocate)
+//! 
+//! # Comparison to `rc_arena`
+//! 
+//! [`rc_arena`](https://github.com/ebfull/rc_arena) is similar to `ref_arena`
+//! in that they are arenas that return reference counted objects.
+//! Both contain inner buffers that hold contiguous lists of objects.
+//! 
+//! The main difference between the two is that rc_arena does not
+//! individually count objects. When all references of an object are
+//! dropped in ref_arena, the inner object is dropped and the space
+//! is made available for a new insertion (similar to `slab` and
+//! `stable-vec`), whereas in rc_arena the space is never made available again.
+//! 
+//! rc_arena is useful if you have a determinite amount of objects
+//! that need to be reference counted, where ref_arena is useful
+//! when you frequently create and drop objects.
+//! 
+//! Note this comparison might not be 100% correct as it's just
+//! what I could tell from looking at the code and documentation.
+//! Additionally this crate was not made with rc_arena in mind.
+//! 
 
 extern crate alloc;
 
@@ -100,10 +138,10 @@ fn get_buffer_size(buffer_num: u32) -> usize {
 
 struct InnerArena<T> {
     // Keep weak reference to vacant so RcRefs can push
-    // when dropped. Weak since if the RcArena is dropped
+    // when dropped. Weak since if the RefArena is dropped
     // we won't be allocating any more.
     vacant: Weak<UnsafeCell<Vec<(usize, usize)>>>,
-    // The index of the buffer in RcArena.inner
+    // The index of the buffer in RefArena.inner
     // Used for inserting dropped indexes into vacant.
     buffer_index: usize,
     // Wish I could get rid of the arena since InnerArena is
@@ -113,7 +151,7 @@ struct InnerArena<T> {
 
 /// An arena that holds reference counted values.
 ///
-/// An RcArena essentially acts as a `Slab<Rc<T>>` but
+/// An RefArena essentially acts as a `Slab<Rc<T>>` but
 /// is much more faster and memory efficient since reference
 /// counting is stored inline with the objects rather than
 /// in separate allocations.
@@ -143,9 +181,9 @@ struct InnerArena<T> {
 /// # Example
 ///
 /// ```
-/// use rc_arena::{RcArena, RcRef};
+/// use ref_arena::{RefArena, RcRef};
 ///
-/// let mut arena: RcArena<i32> = RcArena::new();
+/// let mut arena: RefArena<i32> = RefArena::new();
 ///
 /// // Create a reference
 /// let reference: RcRef<i32> = arena.insert(5);
@@ -163,7 +201,7 @@ struct InnerArena<T> {
 /// // all references are dropped.
 /// drop(reference);
 /// ```
-pub struct RcArena<T> {
+pub struct RefArena<T> {
     // Use MaybeUninit and track Someness with references
     // (0 references == None)
     // Using Option requires T to have clone in some cases.
@@ -176,10 +214,10 @@ pub struct RcArena<T> {
     last_len: usize,
 }
 
-impl<T> RcArena<T> {
-    /// Creates a new `RcArena`
-    pub fn new() -> RcArena<T> {
-        RcArena {
+impl<T> RefArena<T> {
+    /// Creates a new `RefArena`
+    pub fn new() -> RefArena<T> {
+        RefArena {
             inner: Vec::new(),
             vacant: Rc::new(UnsafeCell::new(Vec::new())),
             last_len: 0,
@@ -203,13 +241,13 @@ impl<T> RcArena<T> {
         self.inner.push(Rc::new(inner));
     }
 
-    /// Inserts an item `T` into the `RcArena`, and returns an [`RcRef`] to it.
+    /// Inserts an item `T` into the `RefArena`, and returns an [`RcRef`] to it.
     ///
     /// # Example
     /// ```
-    /// use rc_arena::{RcArena, RcRef};
+    /// use ref_arena::{RefArena, RcRef};
     ///
-    /// let mut arena: RcArena<i32> = RcArena::new();
+    /// let mut arena: RefArena<i32> = RefArena::new();
     ///
     /// let rc: RcRef<i32> = arena.insert(5);
     /// assert_eq!(*rc, 5);
@@ -263,24 +301,24 @@ impl<T> RcArena<T> {
     }
 }
 
-impl<T> Default for RcArena<T> {
+impl<T> Default for RefArena<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// A reference to an item within a [`RcArena`].
+/// A reference to an item within an [`RefArena`].
 ///
 /// This reference has no lifetime and acts like a normal [`Rc`].
 /// Internally this Rc is an index within a bigger buffer
-/// in the RcArena.
+/// in the RefArena.
 ///
 /// Note that keeping an Rc held after the owning arena has
 /// been dropped will cause the holding buffer to stay alive.
 /// The holding buffer is an array of `T`'s, so keeping the
 /// buffer alive means that lots of memory (depending on how
-/// many object were in the arena) will not be freed until
-/// the last RcRef in the buffer has been dropped.
+/// many objects are in the holding buffer) will not be freed
+/// until the last RcRef in the buffer has been dropped.
 ///
 ///
 pub struct RcRef<T> {
@@ -398,7 +436,7 @@ impl<T: Hash> Hash for RcRef<T> {
 
 #[cfg(test)]
 mod test {
-    use crate::{get_buffer_size, RcArena};
+    use crate::{get_buffer_size, RefArena};
     use alloc::vec::Vec;
 
     #[test]
@@ -408,7 +446,7 @@ mod test {
 
     #[test]
     fn live_after() {
-        let mut arena = RcArena::new();
+        let mut arena = RefArena::new();
         let rc = arena.insert(5);
         drop(arena);
         assert_eq!(*rc, 5);
@@ -420,7 +458,7 @@ mod test {
         // first buffer size
         let to_allocate = get_buffer_size(0) + 1;
 
-        let mut arena = RcArena::new();
+        let mut arena = RefArena::new();
         let mut rcs = Vec::new();
 
         for i in 0..to_allocate {
@@ -432,7 +470,7 @@ mod test {
 
     #[test]
     fn ref_clone() {
-        let mut arena = RcArena::new();
+        let mut arena = RefArena::new();
 
         let rc = arena.insert(5);
         let rcclone = rc.clone();
