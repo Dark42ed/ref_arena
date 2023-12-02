@@ -29,7 +29,7 @@ brunch::benches! {
         .run_seeded_with(seed_rc, |v| {
             drop(v)
         }),
-    
+
     Bench::new("RcArena drop 10_000")
         .run_seeded_with(seed_arena, |(arena, v)| {
             drop((arena, v))

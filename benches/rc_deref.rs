@@ -1,4 +1,4 @@
-use std::{rc::Rc, hint::black_box};
+use std::{hint::black_box, rc::Rc};
 
 use brunch::Bench;
 use rc_arena::{RcArena, RcRef};
@@ -33,7 +33,7 @@ brunch::benches! {
 
             v
         }),
-    
+
     Bench::new("RcArena deref 10_000")
         .run_seeded_with(seed_arena, |(_arena, v)| {
             for rc in v.iter() {
