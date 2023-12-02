@@ -1,6 +1,6 @@
 [package]
 name = "ref_arena"
-description = "A reference counted arena"
+description = "An arena of reference counted objects."
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
