@@ -1,17 +1,18 @@
 #![no_std]
-//! An arena that acts similarly to a `Slab<Rc<T>>` but with
+//! An `no_std` (alloc) arena that acts similarly to a `Slab<Rc<T>>` but with
 //! better performance and less features.
 //!
 //! This arena features constant time inserts, derefs,
 //! and drops while allocating less often, decreasing
-//! memory fragmentation, having increased performance,
-//! and (potentially) using less memory.
+//! memory fragmentation, having increased performance
+//! (depending on the allocator), and potentially using 
+//! less memory.
 //!
 //! RcArena does not support Weak references and probably
 //! will not in the indefinite future.
 //!
 //! This library uses a decent amount of unsafe code, and is
-//! mostly tested with miri. It should be safe since the code
+//! partially tested with miri. It should be safe since the code
 //! isn't too complex, but beware of bugs.
 //!
 //! # Example
@@ -27,15 +28,19 @@
 //! // Deref to get the inner value
 //! let inner = *reference;
 //! assert_eq!(inner, 5);
+//! 
+//! // We can create clones of the reference just like an Rc!
+//! let clone = reference.clone();
+//! assert_eq!(*clone, 5);
 //!
 //! // References can be held even after the arena is dropped.
 //! drop(arena);
-//!
 //! assert_eq!(*reference, 5);
 //!
 //! // Objects (and internal buffers) are dropped when
 //! // all references are dropped.
 //! drop(reference);
+//! drop(clone);
 //! ```
 //!
 //! # Benchmarks
@@ -47,7 +52,7 @@
 //! system-to-system and allocator-to-allocator.
 //!
 //! Allocating 10k `Rc`s:
-//! ```
+//! ```text
 //! std::rc::Rc   allocate 10_000  247.59 μs
 //! RcArena       allocate 10_000  48.57 μs
 //!
@@ -55,7 +60,7 @@
 //! ```
 //!
 //! Dereferencing 10k `Rc`s:
-//! ```
+//! ```text
 //! std::rc::Rc   deref 10_000     4.97 μs
 //! RcArena       deref 10_000     4.86 μs
 //!
@@ -67,7 +72,7 @@
 //! indirection which will be looked into depending on how costly it is.
 //!
 //! Dropping 10k `Rc`s:
-//! ```
+//! ```text
 //! std::rc::Rc   drop 10_000      134.35 μs
 //! RcArena       drop 10_000      29.06 μs
 //!
@@ -88,13 +93,21 @@ use core::{
     mem::MaybeUninit,
 };
 
+// Starts at 8 and doubles every time.
 fn get_buffer_size(buffer_num: u32) -> usize {
     2_usize.pow(3 + buffer_num)
 }
 
 struct InnerArena<T> {
+    // Keep weak reference to vacant so RcRefs can push
+    // when dropped. Weak since if the RcArena is dropped
+    // we won't be allocating any more.
     vacant: Weak<UnsafeCell<Vec<(usize, usize)>>>,
+    // The index of the buffer in RcArena.inner
+    // Used for inserting dropped indexes into vacant.
     buffer_index: usize,
+    // Wish I could get rid of the arena since InnerArena is
+    // already allocated in an Rc.
     arena: Box<[(UnsafeCell<MaybeUninit<T>>, UnsafeCell<usize>)]>,
 }
 
@@ -155,7 +168,11 @@ pub struct RcArena<T> {
     // (0 references == None)
     // Using Option requires T to have clone in some cases.
     inner: Vec<Rc<InnerArena<T>>>,
+    // Stores indexes for indexes previously used by an RcRef,
+    // but since dropped and "removed".
     vacant: Rc<UnsafeCell<Vec<(usize, usize)>>>,
+    // The "length" of the last allocated buffer. We use this
+    // so we don't need to populate vacant when we allocate.
     last_len: usize,
 }
 
@@ -171,12 +188,6 @@ impl<T> RcArena<T> {
 
     fn allocate_new_buffer(&mut self) {
         let size = get_buffer_size(self.inner.len() as u32);
-        /*
-        let rc = Rc::<[MaybeUninit<(T, usize)>]>::new_uninit_slice(size);
-        let transmuted = unsafe { core::mem::transmute::<_, Rc<[(UnsafeCell<MaybeUninit<T>>, UnsafeCell<MaybeUninit<usize>>)]>>(rc) };
-        self.inner.push(
-            transmuted
-        );*/
 
         let mut v = Vec::with_capacity(size);
         v.resize_with(size, || {
@@ -208,16 +219,20 @@ impl<T> RcArena<T> {
         let last = self.inner.get(last_idx);
 
         let (buffer_index, index) = match unsafe { &mut *self.vacant.get() }.pop() {
+            // Found vacant spot!
             Some(vacant) => vacant,
+
+            // No vacant spots found
             None => {
                 match last {
                     Some(last) => {
+                        // We have a buffer allocated
                         if self.last_len == last.arena.len() {
                             // Buffer is full, allocate a new one.
                             self.allocate_new_buffer();
                             self.last_len = 0;
                         }
-                        // About to be inserted to
+                        // Insert into buffer now.
                         self.last_len += 1;
 
                         (self.inner.len() - 1, self.last_len - 1)
@@ -225,8 +240,6 @@ impl<T> RcArena<T> {
                     None => {
                         // Allocate initial buffer
                         self.allocate_new_buffer();
-
-                        // About to be inserted to
                         self.last_len += 1;
 
                         (0, 0)
