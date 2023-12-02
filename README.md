@@ -75,3 +75,4 @@ RcArena       drop 10_000      29.06 μs
 ~4.62x speedup
 ```
 
+License: MIT

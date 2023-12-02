@@ -73,7 +73,6 @@
 //! 
 //! ~4.62x speedup
 //! ```
-//! 
 
 extern crate alloc;
 

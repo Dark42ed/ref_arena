@@ -2,6 +2,10 @@
 name = "rc_arena"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+license-file = "LICENSE"
+readme = "README.md"
+repository = "https://github.com/Dark42ed/rc_arena"
 
 [dependencies]
 
