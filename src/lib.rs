@@ -76,8 +76,9 @@
 
 extern crate alloc;
 
-use core::{cell::UnsafeCell, mem::MaybeUninit};
+use core::{cell::UnsafeCell, mem::MaybeUninit, fmt::{Debug, Display}};
 use alloc::{vec::Vec, rc::{Rc, Weak}, boxed::Box};
+use core::hash::Hash;
 
 
 fn get_buffer_size(buffer_num: u32) -> usize {
@@ -294,15 +295,6 @@ impl<T> Clone for RcRef<T> {
     }
 }
 
-impl<T> core::ops::Deref for RcRef<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        // Data is initted on creation
-        unsafe { self.get_data().assume_init_ref() }
-    }
-}
-
 impl<T> core::ops::Drop for RcRef<T> {
     fn drop(&mut self) {
         // Data is unborrowed while dropping
@@ -323,6 +315,58 @@ impl<T> core::ops::Drop for RcRef<T> {
     }
 }
 
+impl<T> core::ops::Deref for RcRef<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        // Data is initted on creation
+        unsafe { self.get_data().assume_init_ref() }
+    }
+}
+
+impl<U, T: AsRef<U>> AsRef<U> for RcRef<T> {
+    fn as_ref(&self) -> &U {
+        (**self).as_ref()
+    }
+}
+
+impl<T: Debug> Debug for RcRef<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        Debug::fmt(&**self, f)
+    }
+}
+
+impl <T: Display> Display for RcRef<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        Display::fmt(&**self, f)
+    }
+}
+
+impl<T: PartialEq> PartialEq for RcRef<T> {
+    fn eq(&self, other: &RcRef<T>) -> bool {
+        (&**self).eq(&**other)
+    }
+}
+
+impl<T: Eq> Eq for RcRef<T> {}
+
+impl<T: PartialOrd> PartialOrd for RcRef<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        (&**self).partial_cmp(&**other)
+    }
+}
+
+impl<T: Ord> Ord for RcRef<T> {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        (&**self).cmp(&**other)
+    }
+}
+
+impl<T: Hash> Hash for RcRef<T> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        (&**self).hash(state)
+    }
+}
 
 #[cfg(test)]
 mod test {
