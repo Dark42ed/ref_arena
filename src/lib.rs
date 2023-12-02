@@ -1,23 +1,149 @@
 #![no_std]
+//! An arena that acts similarly to a `Slab<Rc<T>>` but with
+//! better performance and less features.
+//! 
+//! This arena features constant time inserts, derefs,
+//! and drops while allocating less often, decreasing
+//! memory fragmentation, having increased performance,
+//! and (potentially) using less memory.
+//! 
+//! RcArena does not support Weak references and probably
+//! will not in the indefinite future.
+//! 
+//! This library uses a decent amount of unsafe code, and is
+//! mostly tested with miri. It should be safe since the code
+//! isn't too complex, but beware of bugs.
+//! 
+//! # Example
+//! 
+//! ```
+//! use rc_arena::{RcArena, RcRef};
+//! 
+//! let mut arena: RcArena<i32> = RcArena::new();
+//! 
+//! // Create a reference
+//! let reference: RcRef<i32> = arena.insert(5);
+//! 
+//! // Deref to get the inner value
+//! let inner = *reference;
+//! assert_eq!(inner, 5);
+//! 
+//! // References can be held even after the arena is dropped.
+//! drop(arena);
+//! 
+//! assert_eq!(*reference, 5);
+//! 
+//! // Objects (and internal buffers) are dropped when
+//! // all references are dropped.
+//! drop(reference);
+//! ```
+//! 
+//! # Benchmarks
+//! 
+//! Note: These benchmarks are very specific and
+//! cater to the creation of lots of small objects.
+//! 
+//! Additionally these benchmarks may vary
+//! system-to-system and allocator-to-allocator.
+//! 
+//! Allocating 10k `Rc`s:
+//! ```
+//! std::rc::Rc   allocate 10_000  247.59 μs
+//! RcArena       allocate 10_000  48.57 μs
+//! 
+//! ~5x speedup
+//! ```
+//! 
+//! Dereferencing 10k `Rc`s:
+//! ```
+//! std::rc::Rc   deref 10_000     4.97 μs
+//! RcArena       deref 10_000     4.86 μs
+//! 
+//! no speedup
+//! ```
+//! 
+//! Dereferencing should be about the same within both since
+//! it's a simple pointer dereference. RcRef may have double pointer
+//! indirection which will be looked into depending on how costly it is.
+//! 
+//! Dropping 10k `Rc`s:
+//! ```
+//! std::rc::Rc   drop 10_000      134.35 μs
+//! RcArena       drop 10_000      29.06 μs
+//! 
+//! ~4.62x speedup
+//! ```
+//! 
 
 extern crate alloc;
 
-use core::{cell::{UnsafeCell, RefCell}, mem::MaybeUninit};
+use core::{cell::UnsafeCell, mem::MaybeUninit};
 use alloc::{vec::Vec, rc::{Rc, Weak}, boxed::Box};
-use alloc::vec;
 
 
 fn get_buffer_size(buffer_num: u32) -> usize {
     2_usize.pow(3 + buffer_num)
 }
 
-pub struct InnerArena<T> {
+struct InnerArena<T> {
     vacant: Weak<UnsafeCell<Vec<(usize, usize)>>>,
     buffer_index: usize,
     arena: Box<[(UnsafeCell<MaybeUninit<T>>, UnsafeCell<usize>)]>,
 }
 
 
+/// An arena that holds reference counted values.
+/// 
+/// An RcArena essentially acts as a `Slab<Rc<T>>` but
+/// is much more faster and memory efficient since reference
+/// counting is stored inline with the objects rather than
+/// in separate allocations.
+/// 
+/// # Internals
+/// 
+/// Internally the objects are stored in buffers that get
+/// bigger as you store more objects, similar to a `Vec`. The
+/// key different here is that the `Vec`s are never reallocated,
+/// which allows stable references to be held for the [`RcRef`]s
+/// 
+/// Currently the stable references are not used due to limitations
+/// with storing unsized objects within `Rc`s, but may be used in the
+/// future for further performance improvements. Regardless, these
+/// stable references have another benefit which is that existing memory
+/// is never reallocated, instead more is allocated on top.
+/// 
+/// Buffers start at 8 objects and exponentially increase by
+/// powers of two depending on how many objects are in the arena.
+/// 
+/// # Notes
+/// 
+/// Objects can't be removed or indexed once they are in the arena.
+/// Instead, they are dropped when all references are dropped, similar
+/// to an Rc, and are accessed through the reference.
+/// 
+/// # Example
+/// 
+/// ```
+/// use rc_arena::{RcArena, RcRef};
+/// 
+/// let mut arena: RcArena<i32> = RcArena::new();
+/// 
+/// // Create a reference
+/// let reference: RcRef<i32> = arena.insert(5);
+/// 
+/// // Deref to get the inner value
+/// let inner = *reference;
+/// assert_eq!(inner, 5);
+/// 
+/// // References can be held even after the arena is dropped.
+/// drop(arena);
+/// 
+/// assert_eq!(*reference, 5);
+/// 
+/// // Objects (and internal buffers) are dropped when
+/// // all references are dropped.
+/// drop(reference);
+/// ```
 pub struct RcArena<T> {
     // Use MaybeUninit and track Someness with references
     // (0 references == None)
@@ -27,7 +153,9 @@ pub struct RcArena<T> {
     last_len: usize
 }
 
+
 impl<T> RcArena<T> {
+    /// Creates a new `RcArena`
     pub fn new() -> RcArena<T> {
         RcArena {
             inner: Vec::new(),
@@ -57,6 +185,17 @@ impl<T> RcArena<T> {
         self.inner.push(Rc::new(inner));
     }
 
+    /// Inserts an item `T` into the `RcArena`, and returns an [`RcRef`] to it.
+    /// 
+    /// # Example
+    /// ```
+    /// use rc_arena::{RcArena, RcRef};
+    /// 
+    /// let mut arena: RcArena<i32> = RcArena::new();
+    /// 
+    /// let rc: RcRef<i32> = arena.insert(5);
+    /// assert_eq!(*rc, 5);
+    /// ```
     pub fn insert(&mut self, item: T) -> RcRef<T> {
         let last_idx = self.inner.len().saturating_sub(1);
         let last = self.inner.get(last_idx);
@@ -92,6 +231,7 @@ impl<T> RcArena<T> {
         let buffer = &self.inner[buffer_index];
         unsafe {
             let cell = &buffer.arena[index];
+            // Refcount is 1 (the ref we are about to return)
             (*cell.1.get()) = 1;
             (*cell.0.get()).write(item);            
         }
@@ -103,13 +243,27 @@ impl<T> RcArena<T> {
     }
 }
 
+/// A reference to an item within a [`RcArena`].
+/// 
+/// This reference has no lifetime and acts like a normal [`Rc`].
+/// Internally this Rc is an index within a bigger buffer
+/// in the RcArena.
+/// 
+/// Note that keeping an Rc held after the owning arena has
+/// been dropped will cause the holding buffer to stay alive.
+/// The holding buffer is an array of `T`'s, so keeping the
+/// buffer alive means that lots of memory (depending on how
+/// many object were in the arena) will not be freed until
+/// the last RcRef in the buffer has been dropped.
+/// 
+/// 
 pub struct RcRef<T> {
     buffer: Rc<InnerArena<T>>,
     index: usize,
 }
 
 impl<T> RcRef<T> {
-    /// Gets the refcount.
+    /// Gets the reference count.
     pub fn ref_count(&self) -> usize {
         unsafe { *self.get_inner().1.get() }
     }

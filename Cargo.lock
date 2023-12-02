@@ -19,7 +19,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6fde1aea0a3c540ad05bcffd5579783f6f249e1dfab8cdac42fa526d4fe3aeea"
 
 [[package]]
-name = "rcarena"
+name = "rc_arena"
 version = "0.1.0"
 dependencies = [
  "brunch",
