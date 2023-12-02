@@ -253,16 +253,13 @@ impl<T> RefArena<T> {
     /// assert_eq!(*rc, 5);
     /// ```
     pub fn insert(&mut self, item: T) -> RcRef<T> {
-        let last_idx = self.inner.len().saturating_sub(1);
-        let last = self.inner.get(last_idx);
-
         let (buffer_index, index) = match unsafe { &mut *self.vacant.get() }.pop() {
             // Found vacant spot!
             Some(vacant) => vacant,
-
+            
             // No vacant spots found
             None => {
-                match last {
+                match self.inner.last() {
                     Some(last) => {
                         // We have a buffer allocated
                         if self.last_len == last.arena.len() {
@@ -286,9 +283,9 @@ impl<T> RefArena<T> {
             }
         };
 
-        let buffer = &self.inner[buffer_index];
+        let buffer = unsafe { self.inner.get_unchecked(buffer_index) };
         unsafe {
-            let cell = &buffer.arena[index];
+            let cell = buffer.arena.get_unchecked(index);
             // Refcount is 1 (the ref we are about to return)
             (*cell.1.get()) = 1;
             (*cell.0.get()).write(item);
