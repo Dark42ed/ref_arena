@@ -153,7 +153,6 @@ pub struct RcArena<T> {
     last_len: usize
 }
 
-
 impl<T> RcArena<T> {
     /// Creates a new `RcArena`
     pub fn new() -> RcArena<T> {
@@ -243,6 +242,12 @@ impl<T> RcArena<T> {
     }
 }
 
+impl<T> Default for RcArena<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A reference to an item within a [`RcArena`].
 /// 
 /// This reference has no lifetime and acts like a normal [`Rc`].
@@ -269,7 +274,7 @@ impl<T> RcRef<T> {
     }
 
     unsafe fn get_inner(&self) -> &(UnsafeCell<MaybeUninit<T>>, UnsafeCell<usize>) {
-        unsafe { & (*self.buffer.arena.get_unchecked(self.index)) }
+        unsafe { self.buffer.arena.get_unchecked(self.index) }
     }
 
     /// Gets the inner data and refcount immutably
@@ -344,7 +349,7 @@ impl <T: Display> Display for RcRef<T> {
 
 impl<T: PartialEq> PartialEq for RcRef<T> {
     fn eq(&self, other: &RcRef<T>) -> bool {
-        (&**self).eq(&**other)
+        (**self).eq(&**other)
     }
 }
 
@@ -352,19 +357,19 @@ impl<T: Eq> Eq for RcRef<T> {}
 
 impl<T: PartialOrd> PartialOrd for RcRef<T> {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        (&**self).partial_cmp(&**other)
+        (**self).partial_cmp(&**other)
     }
 }
 
 impl<T: Ord> Ord for RcRef<T> {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        (&**self).cmp(&**other)
+        (**self).cmp(&**other)
     }
 }
 
 impl<T: Hash> Hash for RcRef<T> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        (&**self).hash(state)
+        (**self).hash(state)
     }
 }
 
