@@ -131,6 +131,8 @@ use core::{
     mem::MaybeUninit,
 };
 
+type RcItem<T> = (UnsafeCell<MaybeUninit<T>>, UnsafeCell<usize>);
+
 // Starts at 8 and doubles every time.
 fn get_buffer_size(buffer_num: u32) -> usize {
     2_usize.pow(3 + buffer_num)
@@ -146,7 +148,7 @@ struct InnerArena<T> {
     buffer_index: usize,
     // Wish I could get rid of the arena since InnerArena is
     // already allocated in an Rc.
-    arena: Box<[(UnsafeCell<MaybeUninit<T>>, UnsafeCell<usize>)]>,
+    arena: Box<[RcItem<T>]>,
 }
 
 /// An arena that holds reference counted values.
@@ -227,10 +229,15 @@ impl<T> RefArena<T> {
     fn allocate_new_buffer(&mut self) {
         let size = get_buffer_size(self.inner.len() as u32);
 
-        let mut v = Vec::with_capacity(size);
-        v.resize_with(size, || {
-            (UnsafeCell::new(MaybeUninit::uninit()), UnsafeCell::new(0))
-        });
+        let mut v = Vec::<RcItem<T>>::with_capacity(size);
+        unsafe {
+            for i in 0..size {
+                v.as_mut_ptr().add(i).write(
+                    (UnsafeCell::new(MaybeUninit::uninit()), UnsafeCell::new(0))
+                );
+            }
+            v.set_len(size);
+        }
 
         let inner = InnerArena {
             vacant: Rc::downgrade(&self.vacant),
@@ -316,11 +323,10 @@ impl<T> Default for RefArena<T> {
 /// buffer alive means that lots of memory (depending on how
 /// many objects are in the holding buffer) will not be freed
 /// until the last RcRef in the buffer has been dropped.
-///
-///
+
 pub struct RcRef<T> {
     buffer: Rc<InnerArena<T>>,
-    ptr: *const (UnsafeCell<MaybeUninit<T>>, UnsafeCell<usize>),
+    ptr: *const RcItem<T>,
 }
 
 impl<T> RcRef<T> {
@@ -329,14 +335,14 @@ impl<T> RcRef<T> {
         unsafe { *self.get_inner().1.get() }
     }
 
-    unsafe fn get_inner(&self) -> &(UnsafeCell<MaybeUninit<T>>, UnsafeCell<usize>) {
+    unsafe fn get_inner(&self) -> &RcItem<T> {
+        // Ptr is valid while inner buffer is valid, held by Rc.
         unsafe { &*self.ptr }
     }
 
     /// Gets the inner data and refcount immutably
     /// Safe since it gives an immut ref.
     fn get_data(&self) -> &T {
-        // Index is within buffer len, checked on creation
         unsafe { (*self.get_inner().0.get()).assume_init_ref() }
     }
 }
@@ -484,5 +490,18 @@ mod test {
         assert_eq!(unsafe { &*arena.vacant.get() }.len(), 0);
         drop(rcclone);
         assert_eq!(unsafe { &*arena.vacant.get() }.len(), 1);
+    }
+
+    #[test]
+    fn cell_check() {
+        let mut arena = RefArena::new();
+
+        let rc = arena.insert(5);
+        let r: &i32 = &rc;
+        // Shouldn't cause UB, check with miri.
+        let count = rc.ref_count();
+
+        assert_eq!(*r, 5);
+        assert_eq!(count, 1);
     }
 }
