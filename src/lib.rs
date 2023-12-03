@@ -1,7 +1,7 @@
 #![no_std]
-//! A no_std (alloc) arena that acts similarly to a `Slab<Rc<T>>` but with
+//! A `no_std` (alloc) arena that acts similarly to a `Slab<Rc<T>>` but with
 //! better performance and less features.
-//! 
+//!
 //! This arena stores reference counts with the objects in
 //! a continuous buffer, which decreases the need for
 //! multiple small memory allocations. References can
@@ -13,10 +13,10 @@
 //! This arena features constant time inserts, derefs,
 //! and drops while allocating less often, decreasing
 //! memory fragmentation, having increased performance
-//! (depending on the allocator), and potentially using 
+//! (depending on the allocator), and potentially using
 //! less memory.
 //!
-//! RefArena does not support Weak references and probably
+//! `RefArena` does not support Weak references and probably
 //! will not in the indefinite future.
 //!
 //! This library uses a decent amount of unsafe code, and is
@@ -36,7 +36,7 @@
 //! // Deref to get the inner value
 //! let inner = *reference;
 //! assert_eq!(inner, 5);
-//! 
+//!
 //! // We can create clones of the reference just like an Rc!
 //! let clone = reference.clone();
 //! assert_eq!(*clone, 5);
@@ -76,7 +76,7 @@
 //! ```
 //!
 //! Dereferencing should be about the same within both since
-//! it's a simple pointer dereference. RcRef may have double pointer
+//! it's a simple pointer dereference. `RcRef` may have double pointer
 //! indirection which will be looked into depending on how costly it is.
 //!
 //! Dropping 10k `Rc`s:
@@ -86,36 +86,36 @@
 //!
 //! ~4.62x speedup
 //! ```
-//! 
+//!
 //! Reallocating 10k `Rc`s:
 //! ```text
 //! RefArena      realloc 10_000   45.62 μs
 //! ```
-//! 
-//! In this case 10k RcRefs were allocated and dropped, and we measured
+//!
+//! In this case 10k `RcRef`s were allocated and dropped, and we measured
 //! the time it took to put 10k objects back onto the arena.
 //! (Compare to allocate)
-//! 
+//!
 //! # Comparison to `rc_arena`
-//! 
+//!
 //! [`rc_arena`](https://github.com/ebfull/rc_arena) is similar to `ref_arena`
 //! in that they are arenas that return reference counted objects.
 //! Both contain inner buffers that hold contiguous lists of objects.
-//! 
-//! The main difference between the two is that rc_arena does not
+//!
+//! The main difference between the two is that `rc_arena` does not
 //! individually count objects. When all references of an object are
-//! dropped in ref_arena, the inner object is dropped and the space
+//! dropped in `ref_arena`, the inner object is dropped and the space
 //! is made available for a new insertion (similar to `slab` and
-//! `stable-vec`), whereas in rc_arena the space is never made available again.
-//! 
-//! rc_arena is useful if you have a determinite amount of objects
-//! that need to be reference counted, where ref_arena is useful
+//! `stable-vec`), whereas in `rc_arena` the space is never made available again.
+//!
+//! `rc_arena` is useful if you have a determinite amount of objects
+//! that need to be reference counted, where `ref_arena` is useful
 //! when you frequently create and drop objects.
-//! 
+//!
 //! Note this comparison might not be 100% correct as it's just
 //! what I could tell from looking at the code and documentation.
-//! Additionally this crate was not made with rc_arena in mind.
-//! 
+//! Additionally this crate was not made with `rc_arena` in mind.
+//!
 
 extern crate alloc;
 
@@ -124,11 +124,16 @@ use alloc::{
     rc::{Rc, Weak},
     vec::Vec,
 };
-use core::hash::Hash;
 use core::{
     cell::UnsafeCell,
     fmt::{Debug, Display},
     mem::MaybeUninit,
+};
+use core::{
+    cmp::Ordering,
+    fmt,
+    hash::{Hash, Hasher},
+    ops,
 };
 
 type RcItem<T> = (UnsafeCell<MaybeUninit<T>>, UnsafeCell<usize>);
@@ -153,7 +158,7 @@ struct InnerArena<T> {
 
 /// An arena that holds reference counted values.
 ///
-/// An RefArena essentially acts as a `Slab<Rc<T>>` but
+/// A `RefArena` essentially acts as a `Slab<Rc<T>>` but
 /// is much more faster and memory efficient since reference
 /// counting is stored inline with the objects rather than
 /// in separate allocations.
@@ -232,9 +237,9 @@ impl<T> RefArena<T> {
         let mut v = Vec::<RcItem<T>>::with_capacity(size);
         unsafe {
             for i in 0..size {
-                v.as_mut_ptr().add(i).write(
-                    (UnsafeCell::new(MaybeUninit::uninit()), UnsafeCell::new(0))
-                );
+                v.as_mut_ptr()
+                    .add(i)
+                    .write((UnsafeCell::new(MaybeUninit::uninit()), UnsafeCell::new(0)));
             }
             v.set_len(size);
         }
@@ -263,7 +268,7 @@ impl<T> RefArena<T> {
         let (buffer_index, index) = match unsafe { &mut *self.vacant.get() }.pop() {
             // Found vacant spot!
             Some(vacant) => vacant,
-            
+
             // No vacant spots found
             None => {
                 match self.inner.last() {
@@ -315,14 +320,14 @@ impl<T> Default for RefArena<T> {
 ///
 /// This reference has no lifetime and acts like a normal [`Rc`].
 /// Internally this Rc is an index within a bigger buffer
-/// in the RefArena.
+/// in the `RefArena`.
 ///
 /// Note that keeping an Rc held after the owning arena has
 /// been dropped will cause the holding buffer to stay alive.
 /// The holding buffer is an array of `T`'s, so keeping the
 /// buffer alive means that lots of memory (depending on how
 /// many objects are in the holding buffer) will not be freed
-/// until the last RcRef in the buffer has been dropped.
+/// until the last `RcRef` in the buffer has been dropped.
 
 pub struct RcRef<T> {
     buffer: Rc<InnerArena<T>>,
@@ -335,7 +340,7 @@ impl<T> RcRef<T> {
         unsafe { *self.get_inner().1.get() }
     }
 
-    unsafe fn get_inner(&self) -> &RcItem<T> {
+    const unsafe fn get_inner(&self) -> &RcItem<T> {
         // Ptr is valid while inner buffer is valid, held by Rc.
         unsafe { &*self.ptr }
     }
@@ -348,6 +353,7 @@ impl<T> RcRef<T> {
 }
 
 impl<T> Clone for RcRef<T> {
+    #[inline]
     fn clone(&self) -> Self {
         // Should be safe since refcount is private and not mutably borrowed elsewhere
         let count = self.ref_count();
@@ -359,12 +365,12 @@ impl<T> Clone for RcRef<T> {
 
         RcRef {
             buffer: self.buffer.clone(),
-            ptr: self.ptr.clone()
+            ptr: self.ptr,
         }
     }
 }
 
-impl<T> core::ops::Drop for RcRef<T> {
+impl<T> ops::Drop for RcRef<T> {
     fn drop(&mut self) {
         // Data is unborrowed while dropping
         unsafe {
@@ -387,9 +393,10 @@ impl<T> core::ops::Drop for RcRef<T> {
     }
 }
 
-impl<T> core::ops::Deref for RcRef<T> {
+impl<T> ops::Deref for RcRef<T> {
     type Target = T;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         // Data is initted on creation
         self.get_data()
@@ -397,25 +404,29 @@ impl<T> core::ops::Deref for RcRef<T> {
 }
 
 impl<U, T: AsRef<U>> AsRef<U> for RcRef<T> {
+    #[inline]
     fn as_ref(&self) -> &U {
         (**self).as_ref()
     }
 }
 
 impl<T: Debug> Debug for RcRef<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Debug::fmt(&**self, f)
     }
 }
 
 impl<T: Display> Display for RcRef<T> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         Display::fmt(&**self, f)
     }
 }
 
 impl<T: PartialEq> PartialEq for RcRef<T> {
-    fn eq(&self, other: &RcRef<T>) -> bool {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
         (**self).eq(&**other)
     }
 }
@@ -423,20 +434,23 @@ impl<T: PartialEq> PartialEq for RcRef<T> {
 impl<T: Eq> Eq for RcRef<T> {}
 
 impl<T: PartialOrd> PartialOrd for RcRef<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         (**self).partial_cmp(&**other)
     }
 }
 
 impl<T: Ord> Ord for RcRef<T> {
-    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
         (**self).cmp(&**other)
     }
 }
 
 impl<T: Hash> Hash for RcRef<T> {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        (**self).hash(state)
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (**self).hash(state);
     }
 }
 

@@ -1,6 +1,6 @@
 # ref_arena
 
-A no_std (alloc) arena that acts similarly to a `Slab<Rc<T>>` but with
+A `no_std` (alloc) arena that acts similarly to a `Slab<Rc<T>>` but with
 better performance and less features.
 
 This arena stores reference counts with the objects in
@@ -17,7 +17,7 @@ memory fragmentation, having increased performance
 (depending on the allocator), and potentially using
 less memory.
 
-RefArena does not support Weak references and probably
+`RefArena` does not support Weak references and probably
 will not in the indefinite future.
 
 This library uses a decent amount of unsafe code, and is
@@ -27,7 +27,7 @@ isn't too complex, but beware of bugs.
 ## Example
 
 ```rust
-use RefArena::{RefArena, RcRef};
+use ref_arena::{RefArena, RcRef};
 
 let mut arena: RefArena<i32> = RefArena::new();
 
@@ -77,7 +77,7 @@ no speedup
 ```
 
 Dereferencing should be about the same within both since
-it's a simple pointer dereference. RcRef may have double pointer
+it's a simple pointer dereference. `RcRef` may have double pointer
 indirection which will be looked into depending on how costly it is.
 
 Dropping 10k `Rc`s:
@@ -93,7 +93,7 @@ Reallocating 10k `Rc`s:
 RefArena      realloc 10_000   45.62 μs
 ```
 
-In this case 10k RcRefs were allocated and dropped, and we measured
+In this case 10k `RcRef`s were allocated and dropped, and we measured
 the time it took to put 10k objects back onto the arena.
 (Compare to allocate)
 
@@ -103,19 +103,19 @@ the time it took to put 10k objects back onto the arena.
 in that they are arenas that return reference counted objects.
 Both contain inner buffers that hold contiguous lists of objects.
 
-The main difference between the two is that rc_arena does not
+The main difference between the two is that `rc_arena` does not
 individually count objects. When all references of an object are
-dropped in ref_arena, the inner object is dropped and the space
+dropped in `ref_arena`, the inner object is dropped and the space
 is made available for a new insertion (similar to `slab` and
-`stable-vec`), whereas in rc_arena the space is never made available again.
+`stable-vec`), whereas in `rc_arena` the space is never made available again.
 
-rc_arena is useful if you have a determinite amount of objects
-that need to be reference counted, where ref_arena is useful
+`rc_arena` is useful if you have a determinite amount of objects
+that need to be reference counted, where `ref_arena` is useful
 when you frequently create and drop objects.
 
 Note this comparison might not be 100% correct as it's just
 what I could tell from looking at the code and documentation.
-Additionally this crate was not made with rc_arena in mind.
+Additionally this crate was not made with `rc_arena` in mind.
 
 
 License: MIT

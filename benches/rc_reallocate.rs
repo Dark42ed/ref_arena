@@ -1,5 +1,5 @@
 use brunch::Bench;
-use ref_arena::{RefArena, RcRef};
+use ref_arena::{RcRef, RefArena};
 
 fn seed_arena() -> (RefArena<i32>, Vec<RcRef<i32>>) {
     let mut arena = RefArena::new();

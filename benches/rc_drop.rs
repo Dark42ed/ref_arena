@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use brunch::Bench;
-use ref_arena::{RefArena, RcRef};
+use ref_arena::{RcRef, RefArena};
 
 fn seed_rc() -> Vec<Rc<i32>> {
     let mut v = Vec::new();
