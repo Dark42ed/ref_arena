@@ -76,8 +76,7 @@
 //! ```
 //!
 //! Dereferencing should be about the same within both since
-//! it's a simple pointer dereference. `RcRef` may have double pointer
-//! indirection which will be looked into depending on how costly it is.
+//! it's a simple pointer dereference.
 //!
 //! Dropping 10k `Rc`s:
 //! ```text
@@ -169,12 +168,6 @@ struct InnerArena<T> {
 /// bigger as you store more objects, similar to a `Vec`. The
 /// key different here is that the `Vec`s are never reallocated,
 /// which allows stable references to be held for the [`RcRef`]s
-///
-/// Currently the stable references are not used due to limitations
-/// with storing unsized objects within `Rc`s, but may be used in the
-/// future for further performance improvements. Regardless, these
-/// stable references have another benefit which is that existing memory
-/// is never reallocated, instead more is allocated on top.
 ///
 /// Buffers start at 8 objects and exponentially increase by
 /// powers of two depending on how many objects are in the arena.

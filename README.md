@@ -77,8 +77,7 @@ no speedup
 ```
 
 Dereferencing should be about the same within both since
-it's a simple pointer dereference. `RcRef` may have double pointer
-indirection which will be looked into depending on how costly it is.
+it's a simple pointer dereference.
 
 Dropping 10k `Rc`s:
 ```
