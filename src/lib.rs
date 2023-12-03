@@ -227,6 +227,18 @@ impl<T> RefArena<T> {
     fn allocate_new_buffer(&mut self) {
         let size = get_buffer_size(self.inner.len() as u32);
 
+        // Eliminate some checks in Vec::with_capacity()
+        // size_of(RcItem::<T>) can never be 0 since RcItem contains a usize.
+        // checked at compile time, optimizations remove the assertion.
+        assert!(core::mem::size_of::<RcItem::<T>>() != 0);
+
+        // Can never be false unless it overflows usize, at which point we're screwed anyways
+        debug_assert!(size > 0);
+        match size > 0 {
+            true => (),
+            false => unsafe { core::hint::unreachable_unchecked() }
+        }
+
         let mut v = Vec::<RcItem<T>>::with_capacity(size);
         unsafe {
             for i in 0..size {
@@ -510,5 +522,14 @@ mod test {
 
         assert_eq!(*r, 5);
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_zst() {
+        struct Z;
+
+        let mut arena = RefArena::new();
+        let r = arena.insert(Z);
+        let _ = r.clone();
     }
 }
