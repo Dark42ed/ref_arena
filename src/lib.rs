@@ -375,11 +375,12 @@ impl<T> ops::Drop for RcRef<T> {
                 // No other rcs are alive
                 let data = &mut *inner.0.get();
                 data.assume_init_drop();
-                if let Some(vacant) = self.buffer.vacant.upgrade() {
+                if self.buffer.vacant.strong_count() != 0 {
+                    let vacant = self.buffer.vacant.as_ptr();
                     // Calculate index from ptr offset, so Deref impl doesn't
                     // calculate offset and just derefs ptr directly.
                     let index = self.ptr.offset_from(self.buffer.arena.as_ptr());
-                    (*vacant.get()).push((self.buffer.buffer_index, index as usize));
+                    (*(*vacant).get()).push((self.buffer.buffer_index, index as usize));
                 }
             }
         }
