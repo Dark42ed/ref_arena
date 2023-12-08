@@ -126,7 +126,7 @@ use alloc::{
 use core::{
     cell::UnsafeCell,
     fmt::{Debug, Display},
-    mem::MaybeUninit,
+    mem::MaybeUninit, ptr::NonNull,
 };
 use core::{
     cmp::Ordering,
@@ -298,7 +298,7 @@ impl<T> RefArena<T> {
 
         RcRef {
             buffer: buffer.clone(),
-            ptr: unsafe { buffer.arena.get_unchecked(index) },
+            ptr: NonNull::from(unsafe { buffer.arena.get_unchecked(index) }),
         }
     }
 }
@@ -324,7 +324,7 @@ impl<T> Default for RefArena<T> {
 
 pub struct RcRef<T> {
     buffer: Rc<InnerArena<T>>,
-    ptr: *const RcItem<T>,
+    ptr: NonNull<RcItem<T>>,
 }
 
 impl<T> RcRef<T> {
@@ -335,7 +335,7 @@ impl<T> RcRef<T> {
 
     const unsafe fn get_inner(&self) -> &RcItem<T> {
         // Ptr is valid while inner buffer is valid, held by Rc.
-        unsafe { &*self.ptr }
+        unsafe { &*self.ptr.as_ref() }
     }
 
     /// Gets the inner data and refcount immutably
@@ -379,7 +379,7 @@ impl<T> ops::Drop for RcRef<T> {
                     let vacant = self.buffer.vacant.as_ptr();
                     // Calculate index from ptr offset, so Deref impl doesn't
                     // calculate offset and just derefs ptr directly.
-                    let index = self.ptr.offset_from(self.buffer.arena.as_ptr());
+                    let index = self.ptr.as_ptr().offset_from(self.buffer.arena.as_ptr());
                     (*(*vacant).get()).push((self.buffer.buffer_index, index as usize));
                 }
             }
