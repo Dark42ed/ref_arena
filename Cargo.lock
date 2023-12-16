@@ -20,7 +20,7 @@ checksum = "6fde1aea0a3c540ad05bcffd5579783f6f249e1dfab8cdac42fa526d4fe3aeea"
 
 [[package]]
 name = "ref_arena"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "brunch",
 ]
