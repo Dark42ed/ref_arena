@@ -62,18 +62,18 @@ system-to-system and allocator-to-allocator.
 
 Allocating 10k `Rc`s:
 ```
-std::rc::Rc   allocate 10_000  247.59 μs
-RefArena      allocate 10_000  48.57 μs
+std::rc::Rc   allocate 10_000  261.15 μs
+RefArena      allocate 10_000  49.20 μs
 
 ~5x speedup
 ```
 
 Dereferencing 10k `Rc`s:
 ```
-std::rc::Rc   deref 10_000     4.97 μs
-RefArena      deref 10_000     4.86 μs
+std::rc::Rc   deref 10_000     6.43 μs
+RefArena      deref 10_000     3.77 μs
 
-no speedup
+2x speedup, most likely due to cache hits.
 ```
 
 Dereferencing should be about the same within both since
@@ -81,15 +81,15 @@ it's a simple pointer dereference.
 
 Dropping 10k `Rc`s:
 ```
-std::rc::Rc   drop 10_000      134.35 μs
-RefArena      drop 10_000      29.06 μs
+std::rc::Rc   drop 10_000      147.57 μs
+RefArena      drop 10_000      22.79 μs
 
-~4.62x speedup
+~6.47x speedup
 ```
 
 Reallocating 10k `Rc`s:
 ```
-RefArena      realloc 10_000   45.62 μs
+RefArena      realloc 10_000   42.65 μs
 ```
 
 In this case 10k `RcRef`s were allocated and dropped, and we measured
