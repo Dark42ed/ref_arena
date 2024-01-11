@@ -26,5 +26,9 @@ harness = false
 name = "rc_reallocate"
 harness = false
 
+[[bench]]
+name = "rc_clone"
+harness = false
+
 [dev-dependencies]
 brunch = "0.5.2"
