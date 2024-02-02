@@ -118,6 +118,8 @@
 
 extern crate alloc;
 
+pub mod bounded;
+
 use alloc::{
     boxed::Box,
     rc::{Rc, Weak},
@@ -135,7 +137,7 @@ use core::{
     ops,
 };
 
-type RcItem<T> = (UnsafeCell<MaybeUninit<T>>, UnsafeCell<usize>);
+type RcItem<T> = MaybeUninit<(UnsafeCell<T>, UnsafeCell<usize>)>;
 
 // Starts at 8 and doubles every time.
 fn get_buffer_size(buffer_num: u32) -> usize {
@@ -235,14 +237,7 @@ impl<T> RefArena<T> {
         }
 
         let mut v = Vec::<RcItem<T>>::with_capacity(size);
-        unsafe {
-            for i in 0..size {
-                v.as_mut_ptr()
-                    .add(i)
-                    .write((UnsafeCell::new(MaybeUninit::uninit()), UnsafeCell::new(0)));
-            }
-            v.set_len(size);
-        }
+        v.resize_with(size, || MaybeUninit::uninit());
 
         let inner = InnerArena {
             vacant: Rc::downgrade(&self.vacant),
@@ -299,8 +294,9 @@ impl<T> RefArena<T> {
         unsafe {
             let cell = buffer.arena.get_unchecked(index);
             // Refcount is 1 (the ref we are about to return)
-            (*cell.1.get()) = 1;
-            (*cell.0.get()).write(item);
+            cell.as_ptr().cast_mut().write(
+                (UnsafeCell::new(item), UnsafeCell::new(1))
+            );
         }
 
         RcRef {
@@ -340,15 +336,15 @@ impl<T> RcRef<T> {
         unsafe { *self.get_inner().1.get() }
     }
 
-    const unsafe fn get_inner(&self) -> &RcItem<T> {
+    const unsafe fn get_inner(&self) -> &(UnsafeCell<T>, UnsafeCell<usize>) {
         // Ptr is valid while inner buffer is valid, held by Rc.
-        unsafe { &*self.ptr.as_ref() }
+        unsafe { self.ptr.as_ref().assume_init_ref() }
     }
 
     /// Gets the inner data and refcount immutably
     /// Safe since it gives an immut ref.
     fn get_data(&self) -> &T {
-        unsafe { (*self.get_inner().0.get()).assume_init_ref() }
+        unsafe { &*self.get_inner().0.get() }
     }
 }
 
@@ -380,8 +376,7 @@ impl<T> ops::Drop for RcRef<T> {
 
             if *refcount == 0 {
                 // No other rcs are alive
-                let data = &mut *inner.0.get();
-                data.assume_init_drop();
+                (*self.ptr.as_ptr()).assume_init_drop();
                 if self.buffer.vacant.strong_count() != 0 {
                     let vacant = self.buffer.vacant.as_ptr();
                     // Calculate index from ptr offset, so Deref impl doesn't
