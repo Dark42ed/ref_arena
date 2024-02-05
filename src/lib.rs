@@ -137,6 +137,8 @@ use core::{
     ops,
 };
 
+// ptr count needs to be updated when cloning and dropping.
+// T needs to be dropped when the last reference is dropped.
 type RcItem<T> = MaybeUninit<(UnsafeCell<T>, UnsafeCell<usize>)>;
 
 // Starts at 8 and doubles every time.

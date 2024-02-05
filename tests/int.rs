@@ -18,11 +18,11 @@ pub fn i32_100() {
 
 #[test]
 pub fn i32_100_bounded() {
-    let arena = BoundedRefArena::new();
+    let mut arena = BoundedRefArena::new();
     let mut refs = Vec::new();
 
     for i in 0..100 {
-        refs.push(arena.insert(i));
+        refs.push(unsafe { arena.insert(i) });
     }
 
     for (i, rc) in refs.iter().enumerate() {

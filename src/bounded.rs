@@ -5,20 +5,24 @@ use alloc::{boxed::Box, vec::Vec};
 use crate::{get_buffer_size, RcItem};
 
 pub struct BoundedInnerArena<T> {
-    arena: Box<[RcItem<T>]>,
+    // BoundedInnerArena is only used from const references.
+
+    // We need to mutate RcItems when adding and dropping.
+    arena: Box<[UnsafeCell<RcItem<T>>]>,
     buffer_index: usize,
+
     vacant: *const UnsafeCell<Vec<(usize, usize)>>
 }
 
-pub struct BoundedRefArenaHolder<T> {
+pub struct BoundedRefArena<T> {
     inner: Vec<Box<BoundedInnerArena<T>>>,
     vacant: Box<UnsafeCell<Vec<(usize, usize)>>>,
     last_len: usize,
 }
 
-impl<T> BoundedRefArenaHolder<T> {
-    pub fn new() -> BoundedRefArenaHolder<T> {
-        BoundedRefArenaHolder {
+impl<T> BoundedRefArena<T> {
+    pub fn new() -> BoundedRefArena<T> {
+        BoundedRefArena {
             inner: Vec::new(),
             vacant: Box::new(UnsafeCell::new(Vec::new())),
             last_len: 0
@@ -28,11 +32,11 @@ impl<T> BoundedRefArenaHolder<T> {
     fn allocate_new_buffer(&mut self) {
         let size = get_buffer_size(self.inner.len() as u32);
 
-        let mut v = Vec::<RcItem<T>>::with_capacity(size);
-        v.resize_with(size, || MaybeUninit::uninit());
+        let mut v = Vec::<UnsafeCell<RcItem<T>>>::with_capacity(size);
+        v.resize_with(size, || UnsafeCell::new(MaybeUninit::uninit()));
 
         let inner = BoundedInnerArena {
-            vacant: &*self.vacant as *const _ as *mut _,
+            vacant: &(*self.vacant) as *const _,
             buffer_index: self.inner.len(),
             arena: v.into_boxed_slice(),
         };
@@ -40,10 +44,12 @@ impl<T> BoundedRefArenaHolder<T> {
         self.inner.push(Box::new(inner));
     }
 
-    pub fn insert(&mut self, item: T) -> BoundedRcRef<'_, T> {
+    /// SAFETY: BoundedRcRef must be dropped before BoundedRefArena.
+    pub unsafe fn insert(&mut self, item: T) -> BoundedRcRef<T> {
         // Insert must be &self since RcRef borrows it
 
-        let (buffer_index, index) = match unsafe { &mut *self.vacant.get() }.pop() {
+        // Safety: vacant isn't used while it's being held.
+        let (buffer_index, index) = match self.vacant.get_mut().pop() {
             // Found vacant spot!
             Some(vacant) => vacant,
 
@@ -76,43 +82,24 @@ impl<T> BoundedRefArenaHolder<T> {
         unsafe {
             let buffer = self.inner.get_unchecked(buffer_index);
             let cell = buffer.arena.get_unchecked(index);
-            cell.as_ptr().cast_mut().write(
+            (*cell.get()).write(
                 (UnsafeCell::new(item), UnsafeCell::new(1))
             );
 
             BoundedRcRef {
-                ptr: cell as *const RcItem<T>,
+                ptr: cell.get() as *const RcItem<T>,
                 inner_arena: &**buffer as *const BoundedInnerArena<T>,
-                _phantom: PhantomData
             }
         }
     }
 }
 
-pub struct BoundedRefArena<T> {
-    inner: UnsafeCell<BoundedRefArenaHolder<T>>
-}
-
-impl<T> BoundedRefArena<T> {
-    pub fn new() -> BoundedRefArena<T> {
-        BoundedRefArena {
-            inner: UnsafeCell::new(BoundedRefArenaHolder::new())
-        }
-    }
-
-    pub fn insert<'this>(&'this self, item: T) -> BoundedRcRef<'this, T> {
-        let rcref = unsafe { &mut *self.inner.get() }.insert(item);
-        unsafe { core::mem::transmute::<_, BoundedRcRef<'this, T>>(rcref) }
-    }
-}
-
-pub struct BoundedRcRef<'b, T> {
+pub struct BoundedRcRef<T> {
     ptr: *const RcItem<T>,
     inner_arena: *const BoundedInnerArena<T>,
-    _phantom: PhantomData<&'b BoundedRefArena<T>>
 }
 
-impl<'b, T> BoundedRcRef<'b, T> {
+impl<T> BoundedRcRef<T> {
     fn get_inner(&self) -> &(UnsafeCell<T>, UnsafeCell<usize>) {
         unsafe { (*self.ptr).assume_init_ref() }
     }
@@ -123,7 +110,7 @@ impl<'b, T> BoundedRcRef<'b, T> {
 
 }
 
-impl<'b, T> Deref for BoundedRcRef<'b, T> {
+impl<T> Deref for BoundedRcRef<T> {
     type Target = T;
     
     fn deref(&self) -> &Self::Target {
@@ -133,7 +120,7 @@ impl<'b, T> Deref for BoundedRcRef<'b, T> {
     }
 }
 
-impl<'b, T> Clone for BoundedRcRef<'b, T> {
+impl<T> Clone for BoundedRcRef<T> {
     fn clone(&self) -> Self {
         unsafe { 
             *self.get_inner().1.get() += 1; 
@@ -142,12 +129,11 @@ impl<'b, T> Clone for BoundedRcRef<'b, T> {
         BoundedRcRef {
             ptr: self.ptr,
             inner_arena: self.inner_arena,
-            _phantom: PhantomData
         }
     }
 }
 
-impl<'b, T> Drop for BoundedRcRef<'b, T> {
+impl<T> Drop for BoundedRcRef<T> {
     fn drop(&mut self) {
         unsafe {
             let inner = self.get_inner();
@@ -155,13 +141,17 @@ impl<'b, T> Drop for BoundedRcRef<'b, T> {
             (*inner.1.get()) -= 1;
 
             if (*inner.1.get()) == 0 {
-                // Safe to cast mut since its the only reference left.
-                (*self.ptr.cast_mut()).assume_init_drop();
+                // SAFETY: pretty sure its safe, not too sure what to prove
+                core::ptr::drop_in_place(
+                    (*self.ptr).assume_init_ref().0.get()
+                );
                 
+                // ALIAS SAFETY: Vacant is dropped before end of scope.
                 let vacant = &mut (*(*(*self.inner_arena).vacant).get());
+
                 // Calculate index from ptr offset, so Deref impl doesn't
                 // calculate offset and just derefs ptr directly.
-                let index = self.ptr.offset_from((*self.inner_arena).arena.as_ptr());
+                let index = self.ptr.offset_from((*self.inner_arena).arena.as_ptr().cast());
                 vacant.push(((*self.inner_arena).buffer_index, index as usize));
             }
         }
@@ -173,28 +163,25 @@ mod test {
     use super::*;
 
     #[test]
-    fn ref_clone() {
-        let arena = BoundedRefArena::new();
+    fn ref_ptrs() {
+        let mut arena = BoundedRefArena::new();
 
-        let rc = arena.insert(5);
-        let rcclone = rc.clone();
+        let rc = unsafe { arena.insert(5) };
 
+        assert_eq!(rc.ptr, arena.inner[0].arena[0].get().cast_const());
         assert_eq!(*rc, 5);
-        assert_eq!(*rcclone, 5);
-        assert_eq!(rc.ref_count(), 2);
+        assert_eq!(rc.ref_count(), 1);
+
         drop(rc);
-        assert_eq!(*rcclone, 5);
-        assert_eq!(rcclone.ref_count(), 1);
-        assert_eq!(unsafe { (*(*arena.inner.get()).vacant.get()).len() }, 0);
-        drop(rcclone);
-        assert_eq!(unsafe { (*(*arena.inner.get()).vacant.get()).len() }, 1);
+
+        assert_eq!(arena.vacant.get_mut(), &[(0, 0)]);
     }
 
     #[test]
     fn insert() {
-        let arena = BoundedRefArena::new();
+        // let arena = BoundedRefArena::new();
 
-        let first = arena.insert(5);
+        // let first = arena.insert(5);
 
     }
 }
