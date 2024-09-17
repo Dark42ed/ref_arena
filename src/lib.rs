@@ -562,4 +562,17 @@ mod test {
         let r = arena.insert(Z);
         let _ = r.clone();
     }
+
+    #[test]
+    fn vacancy_alloc() {
+        let mut arena = RefArena::new();
+        let a = arena.insert(1);
+        let b = arena.insert(2);
+        drop(b);
+        let c = arena.insert(2);
+        let d = arena.insert(3);
+        assert!(*a == 1);
+        assert!(*c == 2);
+        assert!(*d == 3);
+    }
 }
