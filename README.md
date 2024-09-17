@@ -60,18 +60,20 @@ cater to the creation of lots of small objects.
 Additionally these benchmarks may vary
 system-to-system and allocator-to-allocator.
 
+Benchmarks taken on an i7-1165G7 @ 2.80GHz
+
 Allocating 10k `Rc`s:
 ```
-std::rc::Rc   allocate 10_000  261.15 μs
-RefArena      allocate 10_000  49.20 μs
+std::rc::Rc   allocate 10_000  130.40 μs
+RefArena      allocate 10_000  97.42 μs
 
 ~5x speedup
 ```
 
 Dereferencing 10k `Rc`s:
 ```
-std::rc::Rc   deref 10_000     6.43 μs
-RefArena      deref 10_000     3.77 μs
+std::rc::Rc   deref 10_000     4.78 μs
+RefArena      deref 10_000     4.30 μs
 
 2x speedup, most likely due to cache hits.
 ```
@@ -81,15 +83,15 @@ it's a simple pointer dereference.
 
 Dropping 10k `Rc`s:
 ```
-std::rc::Rc   drop 10_000      147.57 μs
-RefArena      drop 10_000      22.79 μs
+std::rc::Rc   drop 10_000      96.61 μs
+RefArena      drop 10_000      25.28 μs
 
 ~6.47x speedup
 ```
 
 Reallocating 10k `Rc`s:
 ```
-RefArena      realloc 10_000   42.65 μs
+RefArena      realloc 10_000   28.52 μs
 ```
 
 In this case 10k `RcRef`s were allocated and dropped, and we measured
