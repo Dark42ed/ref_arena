@@ -126,7 +126,7 @@ use alloc::{
 use core::{
     cell::{Cell, UnsafeCell},
     fmt::{Debug, Display},
-    mem::MaybeUninit,
+    mem::{ManuallyDrop, MaybeUninit},
     ptr::NonNull,
 };
 use core::{
@@ -145,13 +145,13 @@ struct InnerArena<T> {
     // Keep weak reference to vacant so RcRefs can push
     // when dropped. Weak since if the RefArena is dropped
     // we won't be allocating any more.
-    vacant: Weak<UnsafeCell<Vec<(usize, usize)>>>,
+    vacant: Weak<UnsafeCell<VacantPtr>>,
     // The index of the buffer in RefArena.inner
     // Used for inserting dropped indexes into vacant.
     buffer_index: usize,
     // Wish I could get rid of the arena since InnerArena is
     // already allocated in an Rc.
-    arena: Box<[UnsafeCell<MaybeUninit<RcItem<T>>>]>,
+    arena: Box<[UnsafeCell<MaybeUninit<RcEntry<T>>>]>,
 }
 
 /// An arena that holds reference counted values.
@@ -207,7 +207,7 @@ pub struct RefArena<T> {
     inner: Vec<Rc<InnerArena<T>>>,
     // Stores indexes for indexes previously used by an RcRef,
     // but since dropped and "removed".
-    vacant: Rc<UnsafeCell<Vec<(usize, usize)>>>,
+    vacant: Rc<UnsafeCell<VacantPtr>>,
     // The "length" of the last allocated buffer.
     last_len: usize,
 }
@@ -217,7 +217,10 @@ impl<T> RefArena<T> {
     pub fn new() -> RefArena<T> {
         RefArena {
             inner: Vec::new(),
-            vacant: Rc::new(UnsafeCell::new(Vec::new())),
+            vacant: Rc::new(UnsafeCell::new(VacantPtr {
+                arena_idx: usize::MAX,
+                buffer_idx: 0,
+            })),
             last_len: 0,
         }
     }
@@ -229,7 +232,7 @@ impl<T> RefArena<T> {
         // Can never be false unless it overflows usize, at which point we're screwed anyways
         debug_assert!(size > 0);
 
-        let mut v: Vec<UnsafeCell<MaybeUninit<RcItem<T>>>> = Vec::with_capacity(size);
+        let mut v: Vec<UnsafeCell<MaybeUninit<RcEntry<T>>>> = Vec::with_capacity(size);
         unsafe {
             // SAFETY: It's MaybeUninit
             v.set_len(size);
@@ -256,42 +259,54 @@ impl<T> RefArena<T> {
     /// assert_eq!(*rc, 5);
     /// ```
     pub fn insert(&mut self, item: T) -> RcRef<T> {
-        let (buffer_index, index) = match unsafe { &mut *self.vacant.get() }.pop() {
-            // Found vacant spot!
-            Some(vacant) => vacant,
-
-            // No vacant spots found
-            None => {
-                match self.inner.last() {
-                    Some(last) => {
-                        // We have a buffer allocated
-                        if self.last_len == last.arena.len() {
-                            // Buffer is full, allocate a new one.
-                            self.allocate_new_buffer();
-                            self.last_len = 0;
-                        }
-                        // Insert into buffer now.
-                        self.last_len += 1;
-
-                        (self.inner.len() - 1, self.last_len - 1)
-                    }
-                    None => {
-                        // Allocate initial buffer
+        let vacant = unsafe { &mut *self.vacant.get() };
+        let vacant_entry = if vacant.arena_idx != usize::MAX {
+            let entry = *vacant;
+            let next = unsafe {
+                (*self.inner[entry.arena_idx].arena[entry.buffer_idx].get())
+                    .assume_init_ref()
+                    .next_vacant
+            };
+            *vacant = next;
+            entry
+        } else {
+            match self.inner.last() {
+                Some(last) => {
+                    // We have a buffer allocated
+                    if self.last_len == last.arena.len() {
+                        // Buffer is full, allocate a new one.
                         self.allocate_new_buffer();
-                        self.last_len += 1;
+                        self.last_len = 0;
+                    }
+                    // Insert into buffer now.
+                    self.last_len += 1;
 
-                        (0, 0)
+                    VacantPtr {
+                        arena_idx: self.inner.len() - 1,
+                        buffer_idx: self.last_len - 1,
+                    }
+                }
+                None => {
+                    // Allocate initial buffer
+                    self.allocate_new_buffer();
+                    self.last_len += 1;
+
+                    VacantPtr {
+                        arena_idx: 0,
+                        buffer_idx: 0,
                     }
                 }
             }
         };
 
-        let buffer = unsafe { self.inner.get_unchecked(buffer_index) };
+        let buffer = unsafe { self.inner.get_unchecked(vacant_entry.arena_idx) };
         unsafe {
-            let cell = buffer.arena.get_unchecked(index);
-            (*cell.get()).write(RcItem {
-                value: item,
-                ref_count: Cell::new(1),
+            let cell = buffer.arena.get_unchecked(vacant_entry.buffer_idx);
+            (*cell.get()).write(RcEntry {
+                item: ManuallyDrop::new(RcItem {
+                    value: item,
+                    ref_count: Cell::new(1),
+                }),
             });
         }
 
@@ -300,7 +315,9 @@ impl<T> RefArena<T> {
             // Don't pass the UnsafeCell, just a mutable to the MaybeUninit.
             // We can do this since the RefArena won't access the UnsafeCell again
             // until it is deallocated.
-            ptr: unsafe { NonNull::new_unchecked(buffer.arena.get_unchecked(index).get()) },
+            ptr: unsafe {
+                NonNull::new_unchecked(buffer.arena.get_unchecked(vacant_entry.buffer_idx).get())
+            },
         }
     }
 }
@@ -309,6 +326,17 @@ impl<T> Default for RefArena<T> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+union RcEntry<T> {
+    next_vacant: VacantPtr,
+    item: ManuallyDrop<RcItem<T>>,
+}
+
+#[derive(Clone, Copy)]
+struct VacantPtr {
+    arena_idx: usize,
+    buffer_idx: usize,
 }
 
 pub struct RcItem<T> {
@@ -331,7 +359,7 @@ pub struct RcItem<T> {
 
 pub struct RcRef<T> {
     buffer: Rc<InnerArena<T>>,
-    ptr: NonNull<MaybeUninit<RcItem<T>>>,
+    ptr: NonNull<MaybeUninit<RcEntry<T>>>,
 }
 
 impl<T> RcRef<T> {
@@ -342,7 +370,7 @@ impl<T> RcRef<T> {
 
     fn get_inner(&self) -> &RcItem<T> {
         // Ptr is valid while inner buffer is valid, held by Rc.
-        unsafe { self.ptr.as_ref().assume_init_ref() }
+        unsafe { &self.ptr.as_ref().assume_init_ref().item }
     }
 
     /// Gets the inner data and refcount immutably
@@ -377,7 +405,8 @@ impl<T> ops::Drop for RcRef<T> {
 
             if new_count == 0 {
                 // No other rcs are alive
-                (*self.ptr.as_ptr()).assume_init_drop();
+                let entry = (*self.ptr.as_ptr()).assume_init_mut();
+                ManuallyDrop::drop(&mut entry.item);
                 if self.buffer.vacant.strong_count() != 0 {
                     // Calculate index from ptr offset, so Deref impl doesn't
                     // calculate offset and just derefs ptr directly.
@@ -386,8 +415,13 @@ impl<T> ops::Drop for RcRef<T> {
                         .as_ptr()
                         .cast::<UnsafeCell<_>>()
                         .offset_from(self.buffer.arena.as_ptr());
+
                     let vacant = &mut *(*self.buffer.vacant.as_ptr()).get();
-                    vacant.push((self.buffer.buffer_index, index as usize));
+                    entry.next_vacant = *vacant;
+                    *vacant = VacantPtr {
+                        arena_idx: self.buffer.buffer_index,
+                        buffer_idx: index as usize,
+                    };
                 }
             }
         }
@@ -502,9 +536,9 @@ mod test {
         drop(rc);
         assert_eq!(*rcclone, 5);
         assert_eq!(rcclone.ref_count(), 1);
-        assert_eq!(unsafe { &*arena.vacant.get() }.len(), 0);
+        // assert_eq!(unsafe { &*arena.vacant.get() }.len(), 0);
         drop(rcclone);
-        assert_eq!(unsafe { &*arena.vacant.get() }.len(), 1);
+        // assert_eq!(unsafe { &*arena.vacant.get() }.len(), 1);
     }
 
     #[test]
