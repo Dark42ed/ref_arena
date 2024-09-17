@@ -124,9 +124,11 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    cell::UnsafeCell,
+    cell::{Cell, UnsafeCell},
     fmt::{Debug, Display},
-    mem::MaybeUninit, ptr::NonNull,
+    mem::MaybeUninit,
+    num::{NonZero, NonZeroUsize},
+    ptr::NonNull,
 };
 use core::{
     cmp::Ordering,
@@ -134,8 +136,6 @@ use core::{
     hash::{Hash, Hasher},
     ops,
 };
-
-type RcItem<T> = (UnsafeCell<MaybeUninit<T>>, UnsafeCell<usize>);
 
 // Starts at 8 and doubles every time.
 fn get_buffer_size(buffer_num: u32) -> usize {
@@ -152,7 +152,7 @@ struct InnerArena<T> {
     buffer_index: usize,
     // Wish I could get rid of the arena since InnerArena is
     // already allocated in an Rc.
-    arena: Box<[RcItem<T>]>,
+    arena: Box<[UnsafeCell<MaybeUninit<RcItem<T>>>]>,
 }
 
 /// An arena that holds reference counted values.
@@ -209,8 +209,7 @@ pub struct RefArena<T> {
     // Stores indexes for indexes previously used by an RcRef,
     // but since dropped and "removed".
     vacant: Rc<UnsafeCell<Vec<(usize, usize)>>>,
-    // The "length" of the last allocated buffer. We use this
-    // so we don't need to populate vacant when we allocate.
+    // The "length" of the last allocated buffer.
     last_len: usize,
 }
 
@@ -229,18 +228,10 @@ impl<T> RefArena<T> {
 
         // Can never be false unless it overflows usize, at which point we're screwed anyways
         debug_assert!(size > 0);
-        match size > 0 {
-            true => (),
-            false => unsafe { core::hint::unreachable_unchecked() }
-        }
 
-        let mut v = Vec::<RcItem<T>>::with_capacity(size);
+        let mut v: Vec<UnsafeCell<MaybeUninit<RcItem<T>>>> = Vec::with_capacity(size);
         unsafe {
-            for i in 0..size {
-                v.as_mut_ptr()
-                    .add(i)
-                    .write((UnsafeCell::new(MaybeUninit::uninit()), UnsafeCell::new(0)));
-            }
+            // SAFETY: It's MaybeUninit
             v.set_len(size);
         }
 
@@ -298,14 +289,18 @@ impl<T> RefArena<T> {
         let buffer = unsafe { self.inner.get_unchecked(buffer_index) };
         unsafe {
             let cell = buffer.arena.get_unchecked(index);
-            // Refcount is 1 (the ref we are about to return)
-            (*cell.1.get()) = 1;
-            (*cell.0.get()).write(item);
+            (*cell.get()).write(RcItem {
+                value: item,
+                ref_count: Cell::new(1),
+            });
         }
 
         RcRef {
             buffer: buffer.clone(),
-            ptr: NonNull::from(unsafe { buffer.arena.get_unchecked(index) }),
+            // Don't pass the UnsafeCell, just a mutable to the MaybeUninit.
+            // We can do this since the RefArena won't access the UnsafeCell again
+            // until it is deallocated.
+            ptr: unsafe { NonNull::new_unchecked(buffer.arena.get_unchecked(index).get()) },
         }
     }
 }
@@ -314,6 +309,11 @@ impl<T> Default for RefArena<T> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub struct RcItem<T> {
+    value: T,
+    ref_count: Cell<usize>,
 }
 
 /// A reference to an item within an [`RefArena`].
@@ -331,24 +331,24 @@ impl<T> Default for RefArena<T> {
 
 pub struct RcRef<T> {
     buffer: Rc<InnerArena<T>>,
-    ptr: NonNull<RcItem<T>>,
+    ptr: NonNull<MaybeUninit<RcItem<T>>>,
 }
 
 impl<T> RcRef<T> {
     /// Gets the reference count.
     pub fn ref_count(&self) -> usize {
-        unsafe { *self.get_inner().1.get() }
+        self.get_inner().ref_count.get()
     }
 
-    const unsafe fn get_inner(&self) -> &RcItem<T> {
+    fn get_inner(&self) -> &RcItem<T> {
         // Ptr is valid while inner buffer is valid, held by Rc.
-        unsafe { &*self.ptr.as_ref() }
+        unsafe { self.ptr.as_ref().assume_init_ref() }
     }
 
     /// Gets the inner data and refcount immutably
     /// Safe since it gives an immut ref.
     fn get_data(&self) -> &T {
-        unsafe { (*self.get_inner().0.get()).assume_init_ref() }
+        &self.get_inner().value
     }
 }
 
@@ -356,12 +356,9 @@ impl<T> Clone for RcRef<T> {
     #[inline]
     fn clone(&self) -> Self {
         // Should be safe since refcount is private and not mutably borrowed elsewhere
-        let count = self.ref_count();
-        // Refcount is initted on creation.
-        // Increment refcount
-        unsafe {
-            (*self.get_inner().1.get()) = count + 1;
-        }
+        let inner = self.get_inner();
+        let count = inner.ref_count.get();
+        inner.ref_count.set(count + 1);
 
         RcRef {
             buffer: self.buffer.clone(),
@@ -375,18 +372,21 @@ impl<T> ops::Drop for RcRef<T> {
         // Data is unborrowed while dropping
         unsafe {
             let inner = self.get_inner();
-            let refcount = &mut *inner.1.get();
-            *refcount -= 1;
+            let new_count = inner.ref_count.get() - 1;
+            inner.ref_count.set(new_count);
 
-            if *refcount == 0 {
+            if new_count == 0 {
                 // No other rcs are alive
-                let data = &mut *inner.0.get();
-                data.assume_init_drop();
+                (*self.ptr.as_ptr()).assume_init_drop();
                 if self.buffer.vacant.strong_count() != 0 {
                     let vacant = self.buffer.vacant.as_ptr();
                     // Calculate index from ptr offset, so Deref impl doesn't
                     // calculate offset and just derefs ptr directly.
-                    let index = self.ptr.as_ptr().offset_from(self.buffer.arena.as_ptr());
+                    let index = self
+                        .ptr
+                        .as_ptr()
+                        .cast::<UnsafeCell<_>>()
+                        .offset_from(self.buffer.arena.as_ptr());
                     (*(*vacant).get()).push((self.buffer.buffer_index, index as usize));
                 }
             }
