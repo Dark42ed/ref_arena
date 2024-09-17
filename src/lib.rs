@@ -127,7 +127,6 @@ use core::{
     cell::{Cell, UnsafeCell},
     fmt::{Debug, Display},
     mem::MaybeUninit,
-    num::{NonZero, NonZeroUsize},
     ptr::NonNull,
 };
 use core::{
@@ -223,6 +222,7 @@ impl<T> RefArena<T> {
         }
     }
 
+    #[allow(clippy::uninit_vec)]
     fn allocate_new_buffer(&mut self) {
         let size = get_buffer_size(self.inner.len() as u32);
 
@@ -379,7 +379,6 @@ impl<T> ops::Drop for RcRef<T> {
                 // No other rcs are alive
                 (*self.ptr.as_ptr()).assume_init_drop();
                 if self.buffer.vacant.strong_count() != 0 {
-                    let vacant = self.buffer.vacant.as_ptr();
                     // Calculate index from ptr offset, so Deref impl doesn't
                     // calculate offset and just derefs ptr directly.
                     let index = self
@@ -387,7 +386,8 @@ impl<T> ops::Drop for RcRef<T> {
                         .as_ptr()
                         .cast::<UnsafeCell<_>>()
                         .offset_from(self.buffer.arena.as_ptr());
-                    (*(*vacant).get()).push((self.buffer.buffer_index, index as usize));
+                    let vacant = &mut *(*self.buffer.vacant.as_ptr()).get();
+                    vacant.push((self.buffer.buffer_index, index as usize));
                 }
             }
         }
